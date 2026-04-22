@@ -118,15 +118,15 @@ async def lifespan(app: FastAPI):
         logger.info("Configuration validation passed")
     
     # Startup
-    print("🚀 Connecting to MongoDB...")
     mongo_connected = False
     try:
         from app.db.mongo_client import db
+        logger.info("🚀 Connecting to MongoDB...")
         await connect_to_mongo()
         mongo_connected = True
         
         # 1.1 📊 Initialize Indexes
-        print("📊 Initializing MongoDB Indexes...")
+        logger.info("📊 Initializing MongoDB Indexes...")
         try:
             # Users: unique email
             await db.users.create_index("email", unique=True)
@@ -159,7 +159,7 @@ async def lifespan(app: FastAPI):
     
     # 🔐 Initialize User Resolution Service (CRITICAL for ONE EMAIL = ONE USER)
     if mongo_connected:
-        print("🔐 Initializing User Resolution Service...")
+        logger.info("🔐 Initializing User Resolution Service...")
         try:
             from motor.motor_asyncio import AsyncIOMotorClient
             from app.config import settings as app_settings
@@ -191,7 +191,7 @@ async def lifespan(app: FastAPI):
         logger.warning("⚠️ Skipping User Resolution Service (MongoDB not connected)")
     
     # 🚀 Initializing PERFECT Database Architecture & Services
-    print("🚀 Initializing Extended Services...")
+    logger.info("🚀 Initializing Extended Services...")
     try:
         # Redis & Semantic Cache
         from app.db.redis_client import redis_client
@@ -214,7 +214,7 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ Extended service initialization warning: {e}")
 
     # 🚀 Backend warmup on reconnect
-    print("🔥 Warming up connections...")
+    logger.info("🔥 Warming up connections...")
     
     # 1. Warm Redis connection (Already done above, but safe to repeat ping)
     try:

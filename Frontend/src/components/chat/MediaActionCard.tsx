@@ -42,16 +42,14 @@ export function MediaActionCard({ payload, chatId, messageId }: MediaActionCardP
         }
     }, [video_id]);
 
-    useEffect(() => {
+    const handlePlay = useCallback(() => {
+        if (!video_id) return;
+        // Mark action as executed only when user actually plays
         if (chatId && messageId) {
             markActionExecuted(chatId, messageId);
         }
-    }, [chatId, messageId, markActionExecuted]);
-
-    const handlePlay = useCallback(() => {
-        if (!video_id) return;
         setIsPlaying(true);
-    }, [video_id]);
+    }, [video_id, chatId, messageId, markActionExecuted]);
 
     const handleStop = useCallback(() => {
         setIsPlaying(false);
