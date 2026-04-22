@@ -202,6 +202,14 @@ async def finalize_generation(
         # Prepare Assistant Message
         assistant_message_id = str(uuid.uuid4())
         metadata = request.metadata or {} if request else {}
+        
+        # DEBUG: Log metadata being saved
+        logger.info(f"💾 Saving message with metadata: {metadata}")
+        if metadata.get('action_payload'):
+            logger.info(f"✅ Action payload found: {metadata['action_payload']}")
+        else:
+            logger.warning(f"⚠️ No action_payload in metadata")
+        
         assistant_message_doc = {
             "id": assistant_message_id,
             "message_id": assistant_message_id,

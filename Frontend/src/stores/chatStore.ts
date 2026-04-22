@@ -330,6 +330,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           // Extract action payload from metadata (restored from MongoDB)
           const actionPayload = msg.metadata?.action_payload || msg.action;
+          
+          // DEBUG: Log action restoration
+          if (msg.role === "assistant") {
+            console.log('📥 Loading message from DB:', {
+              id: msg.id,
+              hasMetadata: !!msg.metadata,
+              metadataKeys: msg.metadata ? Object.keys(msg.metadata) : [],
+              hasActionPayload: !!msg.metadata?.action_payload,
+              actionPayload: msg.metadata?.action_payload,
+              fallbackAction: msg.action
+            });
+          }
 
           // Disable auto-execution for restored history messages
           if (actionPayload?.payload) {

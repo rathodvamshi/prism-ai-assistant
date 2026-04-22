@@ -349,6 +349,7 @@ export const chatAPI = {
                                 const payload = JSON.parse(actionContent);
                                 console.log('🎬 Extracted action:', payload);
                                 capturedAction = payload; // Store for persistence
+                                console.log('💾 Captured action for persistence:', capturedAction);
                                 if (onAction) {
                                     onAction(payload);
                                 }
@@ -357,6 +358,7 @@ export const chatAPI = {
                                 console.log('🎬 Extracted simple action:', actionContent);
                                 const simpleAction = { type: actionContent.trim(), payload: {} };
                                 capturedAction = simpleAction; // Store for persistence
+                                console.log('💾 Captured simple action for persistence:', capturedAction);
                                 if (onAction) {
                                     onAction(simpleAction);
                                 }
@@ -434,6 +436,13 @@ export const chatAPI = {
 
                 while (!finalizeSuccess && finalizeAttempts <= MAX_FINALIZE_RETRIES) {
                     try {
+                        // DEBUG: Log what we're sending
+                        console.log('📤 Finalizing with metadata:', {
+                            hasCapturedAction: !!capturedAction,
+                            capturedAction: capturedAction,
+                            metadata: capturedAction ? { action_payload: capturedAction } : {}
+                        });
+                        
                         const finRes = await fetch(`${API_URL}/api/streaming/chat/${chatId}/finalize/${generation_id}`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
