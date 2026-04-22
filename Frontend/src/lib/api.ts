@@ -331,6 +331,7 @@ export const chatAPI = {
                 const filterMetadata = createMetadataFilter();
 
                 // 🎬 ACTION tag extractor (extracts all action types before filtering)
+                let capturedAction: any = null; // Capture action for persistence
                 const extractActions = (text: string): string => {
                     // Buffer partial ACTION tags across chunks
                     const combined = actionBuffer + text;
@@ -347,14 +348,17 @@ export const chatAPI = {
                             if (actionContent.startsWith('{')) {
                                 const payload = JSON.parse(actionContent);
                                 console.log('🎬 Extracted action:', payload);
+                                capturedAction = payload; // Store for persistence
                                 if (onAction) {
                                     onAction(payload);
                                 }
                             } else {
                                 // Handle simple action types (REFRESH_TASKS, etc.)
                                 console.log('🎬 Extracted simple action:', actionContent);
+                                const simpleAction = { type: actionContent.trim(), payload: {} };
+                                capturedAction = simpleAction; // Store for persistence
                                 if (onAction) {
-                                    onAction({ type: actionContent.trim(), payload: {} });
+                                    onAction(simpleAction);
                                 }
                             }
                         } catch (e) {
@@ -436,7 +440,7 @@ export const chatAPI = {
                             credentials: 'include',
                             body: JSON.stringify({
                                 final_content: accumulatedContent,
-                                metadata: {} // Add empty metadata to match backend expectation
+                                metadata: capturedAction ? { action_payload: capturedAction } : {}
                             }),
                         });
 
