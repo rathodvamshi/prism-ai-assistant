@@ -14,14 +14,17 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import json
 
-# Try to import fastembed, but make it optional
-try:
-    from fastembed import TextEmbedding
-    FASTEMBED_AVAILABLE = True
-except ImportError:
-    FASTEMBED_AVAILABLE = False
-    logger_temp = __import__('logging').getLogger(__name__)
-    logger_temp.warning("⚠️ fastembed not installed - vector embeddings disabled")
+# fastembed is not available on Render (Rust compilation issues)
+# Vector embeddings are disabled
+FASTEMBED_AVAILABLE = False
+
+# Stub class to prevent import errors
+class TextEmbedding:
+    def __init__(self, model_name=None):
+        pass
+    
+    def query(self, texts, top_k=None):
+        return []
 
 from pinecone import Pinecone, ServerlessSpec
 from app.config import settings
