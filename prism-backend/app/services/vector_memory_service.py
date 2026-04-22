@@ -13,7 +13,16 @@ import os
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import json
-from fastembed import TextEmbedding
+
+# Try to import fastembed, but make it optional
+try:
+    from fastembed import TextEmbedding
+    FASTEMBED_AVAILABLE = True
+except ImportError:
+    FASTEMBED_AVAILABLE = False
+    logger_temp = __import__('logging').getLogger(__name__)
+    logger_temp.warning("⚠️ fastembed not installed - vector embeddings disabled")
+
 from pinecone import Pinecone, ServerlessSpec
 from app.config import settings
 from app.models.perfect_models import PineconeMetadata
@@ -54,6 +63,9 @@ def _get_embedding_model():
     if embedding_model is not None:
         return embedding_model
     if not settings.ENABLE_VECTOR_MEMORY:
+        return None
+    if not FASTEMBED_AVAILABLE:
+        logger.warning("⚠️ fastembed not available - vector embeddings disabled")
         return None
     try:
         embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
