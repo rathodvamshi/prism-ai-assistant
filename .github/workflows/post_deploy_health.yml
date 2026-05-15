@@ -1,0 +1,48 @@
+name: Post-deploy Health Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Backend and frontend post-deploy verification
+        env:
+          PROD_BACKEND_URL: ${{ secrets.PROD_BACKEND_URL }}
+          PROD_FRONTEND_URL: ${{ secrets.PROD_FRONTEND_URL }}
+        run: |
+          if [ -z "$PROD_BACKEND_URL" ]; then
+            echo "PROD_BACKEND_URL secret is not set"; exit 1
+          fi
+          if [ -z "$PROD_FRONTEND_URL" ]; then
+            echo "PROD_FRONTEND_URL secret is not set"; exit 1
+          fi
+
+          check_with_retry () {
+            local name="$1"
+            local url="$2"
+            local expected="$3"
+            local attempts=5
+            local delay=10
+
+            for i in $(seq 1 $attempts); do
+              status=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+              echo "$name attempt $i/$attempts -> status=$status"
+              if [ "$status" = "$expected" ]; then
+                echo "$name check passed"
+                return 0
+              fi
+              sleep $delay
+            done
+
+            echo "$name check failed after $attempts attempts"
+            return 1
+          }
+
+          check_with_retry "Backend health" "$PROD_BACKEND_URL/health" "200"
+          check_with_retry "Frontend availability" "$PROD_FRONTEND_URL" "200"
+
+          echo "All post-deploy checks passed"

@@ -10,14 +10,12 @@ import { useChatStore } from "@/stores/chatStore";
 import { useProfileStore } from "@/stores/profileStore";
 import { lazyLoad } from "@/lib/lazyLoad";
 
-// ⚡ CRITICAL: Load immediately (blocking)
-import Hero from "./pages/Hero";
-import Auth from "./pages/Auth";
-import AdminLogin from "./pages/AdminLogin";
-import AdminDashboard from "./pages/AdminDashboard";
-import Contact from "./pages/Contact";
-
-// ⚡ LAZY: Load on-demand (non-blocking)
+// ⚡ LAZY: Load on-demand for route-level code splitting
+const Hero = lazyLoad(() => import("./pages/Hero"));
+const Auth = lazyLoad(() => import("./pages/Auth"));
+const AdminLogin = lazyLoad(() => import("./pages/AdminLogin"));
+const AdminDashboard = lazyLoad(() => import("./pages/AdminDashboard"));
+const Contact = lazyLoad(() => import("./pages/Contact"));
 const Chat = lazyLoad(() => import("./pages/Chat"));
 const Profile = lazyLoad(() => import("./pages/Profile"));
 const NotFound = lazyLoad(() => import("./pages/NotFound"));

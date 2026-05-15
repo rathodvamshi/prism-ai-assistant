@@ -41,6 +41,11 @@ apscheduler>=3.10.0             # Task scheduling
 pytz>=2023.0                    # Timezone handling
 celery[redis]>=5.3.0            # Distributed task queue with Redis backend
 
+# Monitoring & Storage
+sentry-sdk>=1.10.0
+boto3>=1.28.0
+cloudinary>=1.29.0
+
 # Development & Security Tools
 python-decouple>=3.8            # Enhanced environment management
 slowapi>=0.1.9                 # Rate limiting

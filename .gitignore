@@ -1,4 +1,22 @@
-# Ignore Python virtual environments
+node_modules/
+dist/
+build/
+.cache/
+.env
+.env.local
+.env.*.local
+*.log
+*.tmp
+*.bak
+coverage/
+.DS_Store
+/.venv/
+__pycache__/
+*.pyc
+celerybeat-schedule
+*.sqlite3
+uploads/
+public/uploads/# Ignore Python virtual environments
 prism-backend/venv/
 prism-backend/.venv/
 venv/

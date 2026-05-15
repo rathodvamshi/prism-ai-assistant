@@ -67,6 +67,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Optional: Initialize Sentry for error monitoring (if SENTRY_DSN provided)
+SENTRY_DSN = getattr(__import__('os'), 'environ').get('SENTRY_DSN')
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            traces_sample_rate=0.1,
+            send_default_pii=False,
+            integrations=[FastApiIntegration()],
+        )
+        logger.info('Sentry initialized')
+    except Exception as e:
+        logger.warning(f'Could not initialize Sentry: {e}')
+
 # Routers
 from app.routers import health_llm
 from app.routers import highlights
@@ -369,20 +385,30 @@ app.add_middleware(SecurityMiddleware)
 # 🚀 Part 19: Structured Logging (added after security)
 app.add_middleware(StructuredLoggingMiddleware)
 
+# 🚀 GZip compression for production bandwidth savings
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 # CORS (Frontend ↔ Backend) - Allow frontend connection
+allowed_origins = list(getattr(settings, 'cors_origins_list', []))
+if settings.is_development:
+    allowed_origins.extend([
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ])
+
+# Deduplicate while preserving order
+allowed_origins = list(dict.fromkeys(allowed_origins))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8080",  # Frontend dev server
-        "http://127.0.0.1:8080", 
-        "http://localhost:8081",  # Alternative frontend port (when 8080 is busy)
-        "http://127.0.0.1:8081",
-        "http://localhost:3000",  # Alternative frontend ports
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",  # Vite default port
-        "http://127.0.0.1:5173",
-        *getattr(settings, 'cors_origins_list', [])
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],

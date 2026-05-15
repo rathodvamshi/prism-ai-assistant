@@ -1,7 +1,7 @@
 const generateId = () => Math.random().toString(36).substring(2, 15);
 import { create } from "zustand";
 import { Chat, Highlight, Message, MiniAgent, MiniAgentMessage, Task } from "@/types/chat";
-import { cleanMessageContent, realignHighlights } from "@/lib/highlightUtils";
+import { cleanMessageContent, realignHighlights, generateMessageHashSync, logHighlightDebug, getRenderedText } from "@/lib/highlightUtils";
 import { chatAPI } from "@/lib/api";
 import { createMetadataFilter } from "@/lib/streamUtils";
 import { useAuthStore } from "./authStore";
@@ -1984,9 +1984,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       console.error('❌ Message not found:', messageId);
       return;
     }
-
-    // Import validation utilities
-    const { generateMessageHashSync, logHighlightDebug, cleanMessageContent, getRenderedText } = await import('@/lib/highlightUtils');
 
     // ✅ GET RENDERED TEXT (markdown stripped - matches what user sees/selects)
     // CRITICAL: Use the SAME content we're sending to backend (message.content)

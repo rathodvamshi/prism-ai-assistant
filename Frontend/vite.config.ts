@@ -52,6 +52,20 @@ export default defineConfig(({ mode }) => ({
     include: ["react-window", "react-virtualized-auto-sizer"],
   },
   build: {
+    target: "es2020",
+    sourcemap: false,
+    cssCodeSplit: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react_vendor: ["react", "react-dom", "react-router-dom"],
+          ui_vendor: ["@radix-ui/react-dialog", "@radix-ui/react-dropdown-menu", "@radix-ui/react-tooltip"],
+          markdown_vendor: ["react-markdown", "remark-gfm", "react-syntax-highlighter", "shiki"],
+          charts_vendor: ["recharts"],
+          motion_vendor: ["framer-motion", "gsap"],
+        },
+      },
+    },
     commonjsOptions: {
       transformMixedEsModules: true,
       // Broaden CJS handling to avoid interop issues with JSX/runtime
