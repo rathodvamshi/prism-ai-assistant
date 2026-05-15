@@ -27,6 +27,7 @@ from app.db.redis_client import add_message_to_history, get_recent_history, redi
 from app.services.memory_manager import retrieve_long_term_memory, save_long_term_memory
 from app.services.graph_service import save_knowledge, retrieve_knowledge
 from app.db.mongo_client import db, sessions_collection
+from app.services.pre_response_intelligence import pre_response_intelligence
 
 # 🧠 Import Unified Memory Orchestrator & Behavior Engine
 from app.services.unified_memory_orchestrator import (
@@ -57,6 +58,7 @@ logger = logging.getLogger(__name__)
 # Mongo collection for mood history
 mood_collection = db.mood_history
 
+
 # 🚀 OPTIMIZED CORE IDENTITY - Enhanced with Pro Formatting & Beautiful Suggestions
 # 🚀 OPTIMIZED CORE IDENTITY - Enhanced with Pro Formatting & Beautiful Suggestions
 CORE_IDENTITY = """
@@ -77,22 +79,21 @@ You are a warm, intelligent friend who makes every response a delight. Your goal
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 **1. The "Click" Moment** (First Sentence):
-   → Acknowledge the user's intent immediately with warmth.
-   → Example: "That's a great question about React! ⚛️" or "I can definitely help you fix that bug. 🛠️"
+    → Acknowledge the user's intent immediately with warmth.
+    → Example: "That's a great question about React! ⚛️" or "I can definitely help you fix that bug. 🛠️"
 
 **2. The Solution (Core Content)**:
-   → **Direct Answer**: Get straight to the point.
-   → **Break it Down**: Use bullet points (•) for steps or lists.
-   → **Visual Clarity**: Use code blocks for code, bold for key terms.
-   → **Why it Works**: Briefly explain the *insight* or *reasoning* (The "Aha!" moment).
+    → **Direct Answer**: Get straight to the point.
+    → **Break it Down**: Use bullet points (•) for steps or lists.
+    → **Visual Clarity**: Use code blocks for code, bold for key terms.
+    → **Why it Works**: Briefly explain the *insight* or *reasoning* (The "Aha!" moment).
 
 **3. The Polish**:
-   → Add a short example if it clarifies.
-   → Use spacing to let the text breathe.
+    → Add a short example if it clarifies.
+    → Use spacing to let the text breathe.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 3️⃣ TONE STANDARDS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✓ **Warm**: "Here's the key..." instead of "The explanation is..."
 ✓ **Clear**: "Think of it like..." instead of complex definitions.
 ✓ **Visual**: Use 📌 for points, 🔑 for key insights, ✅ for steps.
@@ -100,7 +101,6 @@ You are a warm, intelligent friend who makes every response a delight. Your goal
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 4️⃣ FOLLOW-UP SUGGESTIONS (CRITICAL - MUST FORMAT CORRECTLY)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 **STRICT REQUIREMENT**: End EVERY response with suggestions in EXACT format below.
 
 ⚠️ CRITICAL: Each emoji (💡 🚀 ✨ 🎨) MUST start on a NEW LINE!
@@ -129,7 +129,7 @@ Type this EXACTLY (including all line breaks):
 2. After each emoji suggestion → PRESS ENTER for blank line
 3. Between suggestions → There MUST be an empty line
 4. DO NOT write: "💡 Suggestion1 🚀 Suggestion2" ← THIS IS WRONG!
-5. DO write each emoji on its own line like this:
+5. Do write each emoji on its own line like this:
 
 ```
 💡 Suggestion1
@@ -675,7 +675,7 @@ Your goal is to explain/analyze/act on THIS TEXT.
     # 🌍 Append location context if available
     if location_context:
         memory_section += f"\n\n### 🌍 LOCATION CONTEXT\n{location_context}\n"
-    
+
     # 3️⃣ DYNAMIC SYSTEM PROMPT CONSTRUCTION
     # 3️⃣ DYNAMIC SYSTEM PROMPT CONSTRUCTION
     system_prompt = await behavior_engine.build_dynamic_prompt_async(
@@ -822,15 +822,21 @@ Your goal is to explain/analyze/act on THIS TEXT.
     except Exception as e:
         logger.error(f"🧠 [AskFlow] Error parsing context: {e}")
 
-    # 🧠 SMART MEMORY EXTRACTION - Extract and store user info IMMEDIATELY
-    # This ensures "my name is X", age, location, etc. are captured right away
-    try:
-        from app.services.enhanced_memory_system import enhanced_memory
-        extraction_result = await enhanced_memory.process_message(user_id, message)
-        if extraction_result.get("stored"):
-            logger.info(f"🧠 [Memory] Extracted and stored: {extraction_result['stored']}")
-    except Exception as e:
-        logger.warning(f"⚠️ [Memory] Enhanced extraction failed (non-blocking): {e}")
+    # 🧠 SMART MEMORY EXTRACTION - Fire-and-Forget Background Task
+    # ⚡ NON-BLOCKING: Extraction runs in background, doesn't delay response
+    # This ensures "my name is X", age, location, etc. are captured without latency
+    async def background_memory_extraction():
+        """Fire-and-forget memory extraction - runs after stream starts"""
+        try:
+            from app.services.enhanced_memory_system import enhanced_memory
+            extraction_result = await enhanced_memory.process_message(user_id, message)
+            if extraction_result.get("stored"):
+                logger.info(f"🧠 [Memory] BG Extracted and stored: {extraction_result['stored']}")
+        except Exception as e:
+            logger.debug(f"⚠️ [Memory] BG extraction failed (non-blocking): {e}")
+    
+    # 🚀 Schedule as background task - doesn't block response stream
+    asyncio.create_task(background_memory_extraction())
     
     # 0️⃣ PRONOUN RESOLUTION LAYER (Conversational Continuity)
     # Critical: Resolve "him", "it", "that" BEFORE any processing
@@ -935,8 +941,7 @@ Your goal is to explain/analyze/act on THIS TEXT.
                 return ""
         return ""
 
-    # 🚀 SPECIALIZED AGENT EXECUTION (Media Agent) - STRICT INTERCEPTION
-    # If intent is Media, we MUST return the protocol string immediately to trigger client-side player
+    # 🚀 SPECIALIZED AGENT EXECUTION (Media Agent) — stream details first, then MEDIA_PLAY for the card
     if intent == "media":
         from app.services.media_service import process_media_request
         media_response = await process_media_request(message, user_id)
@@ -953,8 +958,8 @@ Your goal is to explain/analyze/act on THIS TEXT.
         }
         
         query = media_response.query or message
-        
-        # 🎬 Use LLM to generate rich, detailed info about the song/video
+
+        # Stream song / movie details first; video card is emitted after (client parses MEDIA_PLAY last).
         song_info_prompt = f"""You are a music/movie expert. The user wants to play: "{query}"
 
 Generate a SHORT, engaging response (max 150 words) with these details IF KNOWN:
@@ -1000,8 +1005,8 @@ Enjoy the vibes! 🎧"""
             # Fallback if LLM fails
             logger.warning(f"Song info LLM failed: {e}")
             yield f"🎵 **{query}** - Great choice! Hit play and enjoy! ✨\n\n"
-        
-        # Protocol Action (System sees this)
+
+        # Protocol: after the written response, attach the inline player (frontend order: content → card)
         yield f"<!--ACTION:MEDIA_PLAY:{json.dumps(payload)}-->"
         return
     
@@ -1263,7 +1268,9 @@ Or say **"No"** to cancel and try again.
 
     # Initialize action holders (used later after LLM response)
     media_action_pending = None
-    suggestions_action_pending = None
+    # ⚠️ REMOVED: suggestions_action_pending = None
+    # Reason: LLM already includes suggestions in response text via system prompt
+    # Sending suggestions twice (once in text, once as action) creates duplicates
 
     # 🎵 MEDIA PROTOCOL - Rich Context First, Action Second
     if intent == "media":
@@ -1307,15 +1314,8 @@ Or say **"No"** to cancel and try again.
                         "video_id": media_resp.video_id
                     }
                 }
-                
-                # Store suggestions action for chips
-                suggestions_list = media_resp.clarification_options or ["Find similar", "Summarize this"]
-                suggestions_action_pending = {
-                    "type": "suggestions",
-                    "payload": {
-                        "suggestions": suggestions_list
-                    }
-                }
+                # ⚠️ REMOVED: suggestions_action_pending assignment
+                # Reason: LLM already includes suggestions in response via system prompt instruction
             
         except Exception as e:
             logger.error(f"Media processing failed: {e}", exc_info=True)
@@ -1349,27 +1349,59 @@ Or say **"No"** to cancel and try again.
         api_key=api_key
     )
     
+    # 🚀 REAL-TIME PROHIBITED PHRASE FILTERING
+    # Filter out robotic/prohibited phrases as they stream
+    # This prevents the "feel free to ask" 8-9 second lag issue
+    prohibited_in_stream = [
+        "feel free to ask",
+        "don't hesitate to ask",
+        "let me know if you need",
+        "happy to help further",
+        "is there anything else i can",
+        "hope this helps",
+        "don't hesitate",
+        "should you have any",
+        "if you have any further",
+    ]
+    
     async for chunk in response_stream:
-        full_response += chunk
-        yield chunk
+        # 🔥 FILTER: Check if chunk contains prohibited phrases
+        chunk_lower = chunk.lower()
+        filtered_chunk = chunk
+        
+        for prohibited_phrase in prohibited_in_stream:
+            if prohibited_phrase in chunk_lower:
+                logger.warning(f"🚨 [Stream] Filtered prohibited phrase: '{prohibited_phrase}' from chunk")
+                # Remove the phrase and any trailing punctuation/spaces
+                import re
+                filtered_chunk = re.sub(
+                    r'\s*' + re.escape(prohibited_phrase) + r'\s*[.!?]*\s*',
+                    '',
+                    filtered_chunk,
+                    flags=re.IGNORECASE
+                )
+                # Don't yield empty chunks
+                if not filtered_chunk.strip():
+                    logger.debug(f"🚨 [Stream] Chunk became empty after filtering, skipping")
+                    continue
+        
+        full_response += chunk  # Keep original for DB
+        if filtered_chunk.strip():  # Only yield non-empty filtered chunks
+            yield filtered_chunk
+
+    
     
     # 8️⃣ YIELD MEDIA ACTION (if pending) AFTER LLM completes
     if media_action_pending:
         import json
         logger.info(f"🎬 MEDIA ACTION (after response): mode={media_action_pending['payload']['mode']}")
         yield f"\n<!--ACTION:{json.dumps(media_action_pending)}-->"
-        
-    if suggestions_action_pending:
-        import json
-        logger.info(f"💡 SUGGESTIONS ACTION: {len(suggestions_action_pending['payload']['suggestions'])} chips")
-        yield f"\n<!--ACTION:{json.dumps(suggestions_action_pending)}-->"
     
     # 7️⃣ POST-RESPONSE PROCESSING (Async Background)
     # Validate final response quality
     quality_score, feedback = _assess_quality(full_response, behavior_profile)
     if quality_score < 0.6:
-        logger.warning(f"⚠️ Low quality response detected: {feedback}")
-        # In a stream, we can't "retry", but we can log for improvement
+        logger.warning(f"⚠️ Low quality response detected: {feedback} - Consider quality filters")
         
     # 8️⃣ CONVERSATIONAL CONTINUITY (Redis History)
     # MongoDB persistence is handled by streaming finalize endpoint to avoid duplicates.

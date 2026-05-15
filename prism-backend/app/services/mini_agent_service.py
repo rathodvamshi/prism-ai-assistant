@@ -112,7 +112,7 @@ Session Type: {"Follow-up conversation" if has_history else "First clarification
 {mode_instruction}
 
 🎯 OUTPUT GUIDELINES:
-- Be WARM and PERSONAL (like a patient teacher)
+- Be warm, clear, and concise.
 - Keep responses SHORT (2-4 sentences ideal)
 - Use SIMPLE language (avoid technical jargon)
 - Add quick EXAMPLES when they clarify (1 sentence max)

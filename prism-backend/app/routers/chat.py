@@ -24,7 +24,11 @@ highlights_collection = db.message_highlights
 from app.services.advanced_memory_manager import memory_manager
 from app.services import router_service
 from app.services.cache_service import cache_service
-from app.utils.llm_client import get_llm_response as groq_llm_response, get_llm_response_stream, generate_chat_title
+from app.utils.llm_client import (
+    get_llm_response as groq_llm_response, 
+    get_llm_response_stream,
+)
+from app.services.session_naming_service import generate_and_persist_session_title
 from app.services.main_brain import generate_response as main_brain_generate_response
 from pydantic import BaseModel, EmailStr
 from app.routers.auth import User
@@ -86,6 +90,12 @@ async def create_new_chat(
             "user_id": user_id,
             "userId": user_id,  # Also store as userId for compatibility
             "title": request.title or "New Chat",
+            "sessionTitle": request.title or "New Chat",
+            "sessionSummary": "",
+            "primaryTopic": "",
+            "tags": [],
+            "titleGenerated": False,
+            "titleConfidence": 0.0,
             "messages": [],
             "isPinned": False,
             "isSaved": False,
@@ -94,6 +104,7 @@ async def create_new_chat(
             "createdAt": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "updatedAt": datetime.utcnow(),
+            "lastMessageAt": datetime.utcnow(),
         }
         # Store session in MongoDB immediately - this is the single source of truth
         result = await sessions_collection.insert_one(new_session)
@@ -827,7 +838,8 @@ async def send_message(
                 "$push": {"messages": user_message},
                 "$set": {
                     "updated_at": update_time,
-                    "updatedAt": update_time  # Update both field names for compatibility
+                    "updatedAt": update_time,  # Update both field names for compatibility
+                    "lastMessageAt": update_time,
                 }
             }
         ),
@@ -869,7 +881,19 @@ async def send_message(
         fallback=None
     )
 
-    return {"response": ai_response_content, "message_id": ai_message["id"], "timestamp": ai_message["timestamp"], "routing": routing_payload}
+    asyncio.create_task(
+        generate_and_persist_session_title(
+            session,
+            _raw_text,
+            ai_response_content,
+            request.chatId,
+            intent=routing_payload.get("intent_packet", {}).get("primary_intent"),
+            entities=routing_payload.get("entities_resolved"),
+        )
+    )
+
+    response_payload = {"response": ai_response_content, "message_id": ai_message["id"], "timestamp": ai_message["timestamp"], "routing": routing_payload}
+    return response_payload
 
 @router.post("/message/stream")
 async def send_message_stream(
@@ -955,7 +979,8 @@ async def send_message_stream(
                 "$push": {"messages": user_message},
                 "$set": {
                     "updated_at": update_time,
-                    "updatedAt": update_time
+                    "updatedAt": update_time,
+                    "lastMessageAt": update_time
                 }
             }
         ),
@@ -1095,6 +1120,7 @@ async def send_message_stream(
         """Generates SSE-formatted stream of AI response chunks"""
         nonlocal intent  # Allow modification of outer scope variable
         full_response = ""
+        title_task = None
         
         try:
             # Send initial metadata (SSE event: start)
@@ -1440,22 +1466,6 @@ async def send_message_stream(
                     # Wait for brain response
                     full_response = await brain_pending
                     
-                    # ⚡ AUTO-RENAME: Generate AFTER response for perfect naming
-                    try:
-                        current_title = session.get("title", "Untitled")
-                        if current_title in ["New Chat", "Untitled", "", None]:
-                            # Use BOTH user query and AI response for a truly "sweet" title
-                            new_title = await generate_chat_title(request.message, full_response)
-                            if new_title and new_title not in ["New Chat", "Untitled"]:
-                                await sessions_collection.update_one(
-                                     {"_id": session["_id"]},
-                                     {"$set": {"title": new_title}}
-                                )
-                                yield f"event: title\ndata: {json.dumps({'title': new_title})}\n\n"
-                                logger.info(f"✅ [Step] Auto-renamed chat to: {new_title}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Title generation failed: {e}")
-
                     logger.info(f"✅ [Step] Response generated (length: {len(full_response)})")
                     # Stream the full response as a single logical token
                     yield f"event: token\ndata: {full_response}\n\n"
@@ -1463,6 +1473,15 @@ async def send_message_stream(
                         "prompt": len(_working_text or ""),
                         "completion": len(full_response),
                     }
+
+                    if title_task:
+                        try:
+                            session_title = await title_task
+                            if session_title:
+                                yield f"event: title\ndata: {json.dumps({'title': session_title})}\n\n"
+                                logger.info(f"✅ [Step] Session titled: {session_title}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Session title generation failed: {e}")
                     
                     yield f"event: done\ndata: {json.dumps({'usage': usage})}\n\n"
                 else:
@@ -1479,26 +1498,20 @@ async def send_message_stream(
                         # Send token as SSE (raw text chunk)
                         yield f"event: token\ndata: {chunk}\n\n"
 
-                    # ⚡ AUTO-RENAME: Generate AFTER response for perfect context
-                    # if not title_task: # Removed check as title_task is separate
-                    try:
-                        current_title = session.get("title", "Untitled")
-                        if current_title in ["New Chat", "Untitled", "", None]:
-                            new_title = await generate_chat_title(request.message, full_response)
-                            if new_title and new_title not in ["New Chat", "Untitled"]:
-                                await sessions_collection.update_one(
-                                        {"_id": session["_id"]},
-                                        {"$set": {"title": new_title}}
-                                )
-                                yield f"event: title\ndata: {json.dumps({'title': new_title})}\n\n"
-                    except Exception as e:
-                        logger.warning(f"⚠️ Title generation failed: {e}") 
-
                     # Send completion signal with basic usage info
                     usage = {
                         "prompt": len(_working_text or ""),
                         "completion": len(full_response),
                     }
+
+                    if title_task:
+                        try:
+                            session_title = await title_task
+                            if session_title:
+                                yield f"event: title\ndata: {json.dumps({'title': session_title})}\n\n"
+                                logger.info(f"✅ [Step] Session titled: {session_title}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Session title generation failed: {e}")
 
                     yield f"event: done\ndata: {json.dumps({'usage': usage})}\n\n"
             

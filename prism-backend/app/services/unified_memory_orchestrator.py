@@ -120,6 +120,44 @@ class UnifiedMemoryOrchestrator:
         self.neo4j = Neo4jClient()
         self.pinecone = pinecone_index
         self.get_embedding = get_embedding
+
+    def _expand_semantic_query(self, query: str, intent: str) -> Tuple[str, List[str]]:
+        """Rewrite vague preference/coding queries into richer semantic search terms."""
+        normalized = (query or "").lower().strip()
+        expansions = [query]
+
+        preference_markers = [
+            "which coding lang", "which programming lang", "what coding lang",
+            "what programming lang", "what language do i code in",
+            "which language do i code in", "favorite coding language",
+            "preferred coding language", "primary coding language",
+            "language i love to code in", "coding language", "programming language"
+        ]
+
+        if intent == "preferences" or any(marker in normalized for marker in preference_markers):
+            expansions.extend([
+                "user preferred programming language",
+                "user favorite coding language",
+                "user loves coding in java",
+                "preferred language for development",
+                "coding language preference"
+            ])
+
+        # Return a compact query that Pinecone can embed well, plus the extra search hints for logs.
+        combined = " | ".join(dict.fromkeys([part for part in expansions if part]))
+        return combined, expansions
+
+    def _has_preference_reasoning(self, query: str, intent: str) -> bool:
+        """Detect whether we should use semantic preference retrieval instead of profile-only lookup."""
+        normalized = (query or "").lower()
+        preference_markers = [
+            "which coding lang", "which programming lang", "what coding lang",
+            "what programming lang", "what language do i code in",
+            "which language do i code in", "favorite coding language",
+            "preferred coding language", "primary coding language",
+            "language i love to code in", "coding language", "programming language"
+        ]
+        return intent == "preferences" and any(marker in normalized for marker in preference_markers)
         self.memory_collection = memory_collection
         self.users_collection = users_collection  # 🆕 For user profile with location
         self.tasks_collection = tasks_collection  # 🆕 For task awareness
@@ -188,7 +226,9 @@ class UnifiedMemoryOrchestrator:
         user_id: str = None,              # Support positional for backwards compatibility
         query: str = None,
         intent: str = "general",
-        user_id_or_email: str = None      # Also accept named parameter
+        user_id_or_email: str = None,     # Also accept named parameter
+        retrieval_scope: str = "auto",   # auto | light | profile | universal
+        semantic_query: Optional[str] = None
     ) -> Tuple[Dict[str, Any], List[str]]:
         """
         💎 HOLOGRAPHIC MEMORY RETRIEVAL (ULTRA-FAST)
@@ -218,17 +258,30 @@ class UnifiedMemoryOrchestrator:
         debug_logs.extend(resolve_logs)
         
         debug_logs.append(f"[Holographic Fetch START] user_id={resolved_user_id}, intent={intent}")
+
+        effective_query = semantic_query or query or ""
+        if semantic_query and semantic_query != query:
+            debug_logs.append(f"🧠 [Semantic Query] Expanded query: {semantic_query}")
         
         # 🚀 ULTRA-FAST: Skip heavy fetches for simple intents
-        # "identity" and "preferences" need MongoDB profile (fastest) - NOT full Neo4j/Pinecone search
+        # "identity" and "preferences" usually need MongoDB profile (fastest)
         fast_intents = ["general", "greeting", "thanks", "media", "task", "coding"]
+        universal_mode = retrieval_scope == "universal"
+        profile_mode = retrieval_scope == "profile"
+        light_mode = retrieval_scope == "light"
         
-        # 🆕 "identity" and "preferences" intents ONLY need MongoDB (where name/age/profile/preferences are stored)
-        # Neo4j/Pinecone are TOO SLOW and cause timeouts - user profile and preferences are in MongoDB!
-        if intent in ["identity", "preferences"]:
+        # 🆕 "identity" and "preferences" intents usually need MongoDB profile first.
+        # Universal reasoning can also include Pinecone for semantic recall.
+        if intent in ["identity", "preferences"] and not universal_mode:
             debug_logs.append(f"🔍 [IDENTITY INTENT] Fast MongoDB-only fetch for user profile")
             # ONLY fetch MongoDB profile - this is where name/email/location lives
-            mongo_result = await self._fetch_from_mongodb(resolved_user_id, query, intent)
+            mongo_result = await self._fetch_from_mongodb(resolved_user_id, effective_query, intent)
+
+            expanded_query, query_hints = self._expand_semantic_query(effective_query, intent)
+            pinecone_result = None
+            if self._has_preference_reasoning(effective_query, intent) or profile_mode:
+                debug_logs.append(f"🧠 [Semantic Expansion] Expanded preference query: {expanded_query}")
+                pinecone_result = await self._fetch_from_pinecone(resolved_user_id, expanded_query)
             
             context = {
                 "session": {},
@@ -243,15 +296,21 @@ class UnifiedMemoryOrchestrator:
                 debug_logs.append(f"✅ MongoDB: Found profile (name={mongo_result.data.get('name')}) ({mongo_result.query_time_ms:.1f}ms)")
             else:
                 debug_logs.append(f"⚠️ MongoDB: No profile found ({mongo_result.query_time_ms:.1f}ms)")
+
+            if pinecone_result and isinstance(pinecone_result, MemoryFetchResult) and pinecone_result.found:
+                context["memories"] = pinecone_result.data.get("memories", [])
+                debug_logs.append(f"✅ Pinecone: Found {len(context['memories'])} semantic memories ({pinecone_result.query_time_ms:.1f}ms)")
+                if query_hints:
+                    debug_logs.append(f"🧠 [Semantic Expansion] Hints used: {', '.join(query_hints[1:])}")
             
             total_time = (datetime.now() - start_time).total_seconds() * 1000
             debug_logs.append(f"[Holographic Fetch END - {intent.upper()} FAST PATH] Total time: {total_time:.1f}ms")
             return context, debug_logs
             
-        elif intent in fast_intents:
+        elif intent in fast_intents and not universal_mode:
             debug_logs.append(f"⚡ [ULTRA-FAST] Skipping heavy fetches for intent: {intent}")
             # Only fetch MongoDB profile (usually <10ms)
-            mongo_result = await self._fetch_from_mongodb(resolved_user_id, query, intent)
+            mongo_result = await self._fetch_from_mongodb(resolved_user_id, effective_query, intent)
             
             context = {
                 "session": {},
@@ -273,15 +332,15 @@ class UnifiedMemoryOrchestrator:
             debug_logs.append(f"[Holographic Fetch END - FAST PATH] Total time: {total_time:.1f}ms")
             return context, debug_logs
         
-        # Full fetch only for "history" or "preferences" intents
-        debug_logs.append(f"📚 [FULL FETCH] Deep memory search for intent: {intent}")
+        # Full fetch for universal reasoning or deep queries
+        debug_logs.append(f"📚 [FULL FETCH] Deep memory search for intent: {intent} (scope={retrieval_scope})")
         
         # Launch parallel tasks
-        redis_task = self._fetch_from_redis(resolved_user_id, query)
+        redis_task = self._fetch_from_redis(resolved_user_id, effective_query)
         global_task = self._fetch_global_stats(resolved_user_id) # 🆕 Fetch global stats
-        mongo_task = self._fetch_from_mongodb(resolved_user_id, query, intent)
-        neo4j_task = self._fetch_from_neo4j(resolved_user_id, query)
-        pinecone_task = self._fetch_from_pinecone(resolved_user_id, query)
+        mongo_task = self._fetch_from_mongodb(resolved_user_id, effective_query, intent)
+        neo4j_task = self._fetch_from_neo4j(resolved_user_id, effective_query)
+        pinecone_task = self._fetch_from_pinecone(resolved_user_id, effective_query)
         task_task = self._fetch_from_tasks(resolved_user_id)  # Always fetch recent tasks for context
         
         # Wait for all results (gather)

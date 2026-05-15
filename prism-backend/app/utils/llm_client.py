@@ -1,17 +1,28 @@
-# Helper to return the LLM client (for sync/legacy code)
-def get_llm_client():
-    return client
 from groq import AsyncGroq # <--- MUST be AsyncGroq
 from app.config import settings
+from app.db.redis_client import redis_client
+import json
 import logging
 import asyncio  # 🚀 Required for event loop flush
+from typing import Any, Optional, List
+import hashlib
+import re
 
 logger = logging.getLogger(__name__)
 
-# Initialize the default Async Client (platform key)
-client = AsyncGroq(
-    api_key=settings.GROQ_API_KEY,
-)
+_default_client: Optional[AsyncGroq] = None
+
+
+def _get_default_client() -> AsyncGroq:
+    global _default_client
+    if _default_client is None:
+        _default_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+    return _default_client
+
+
+# Helper to return the LLM client (for sync/legacy code)
+def get_llm_client():
+    return _get_default_client()
 
 # 🎚️ Import Adaptive Quality Service
 try:
@@ -30,7 +41,357 @@ def get_client_for_key(api_key: str | None = None) -> AsyncGroq:
     """Get AsyncGroq client - uses provided key or falls back to platform key."""
     if api_key and api_key != settings.GROQ_API_KEY:
         return AsyncGroq(api_key=api_key)
-    return client
+    return _get_default_client()
+
+
+SESSION_TITLE_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7
+SESSION_TITLE_PLACEHOLDERS = {
+    "",
+    "new chat",
+    "untitled",
+    "new conversation",
+    "conversation",
+    "session 1",
+    "shared conversation",
+    "new beginning",
+    "new idea",
+}
+SESSION_TITLE_GREETINGS = {
+    "hi",
+    "hello",
+    "hey",
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "how are you",
+    "what's up",
+    "whats up",
+    "yo",
+    "sup",
+}
+SESSION_TITLE_STOPWORDS = {
+    "a", "an", "and", "are", "around", "as", "at", "be", "build", "can",
+    "could", "do", "for", "from", "give", "help", "i", "in", "into", "is",
+    "it", "learn", "let", "like", "me", "my", "need", "of", "on", "or",
+    "please", "prepare", "show", "teach", "the", "to", "want", "we", "with",
+    "would", "you", "your", "wanting", "using", "about", "want", "wanting",
+    "want", "make", "build", "create", "design", "understand", "explain",
+    "want", "want to", "prepare", "prep", "interview", "question", "questions",
+}
+TITLE_KEYWORD_MAP = {
+    "backend": "Backend",
+    "frontend": "Frontend",
+    "api": "API",
+    "apis": "API",
+    "database": "Database",
+    "dbms": "DBMS",
+    "ai": "AI",
+    "ml": "ML",
+    "react": "React",
+    "hooks": "Hooks",
+    "architecture": "Architecture",
+    "interview": "Interview",
+    "prep": "Prep",
+    "preparation": "Prep",
+    "development": "Development",
+    "coding": "Coding",
+    "learning": "Learning",
+    "system": "System",
+    "memory": "Memory",
+    "java": "Java",
+    "python": "Python",
+    "javascript": "JavaScript",
+    "typescript": "TypeScript",
+    "node": "Node",
+    "nodejs": "Node.js",
+}
+
+
+def _normalize_title_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"[\"'`]+", "", str(text)).strip()
+    cleaned = re.sub(r"[\s\-_/]+", " ", cleaned)
+    cleaned = re.sub(r"[^A-Za-z0-9\.\s]", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _smart_title_case(words: List[str]) -> str:
+    rendered = []
+    for word in words:
+        if not word:
+            continue
+        key = word.lower().strip(".")
+        if key in TITLE_KEYWORD_MAP:
+            rendered.append(TITLE_KEYWORD_MAP[key])
+            continue
+        if word.isupper() and len(word) <= 6:
+            rendered.append(word)
+            continue
+        if re.fullmatch(r"[A-Za-z]+\.[A-Za-z]+", word):
+            rendered.append(word)
+            continue
+        rendered.append(word[:1].upper() + word[1:].lower())
+    return " ".join(rendered).strip()
+
+
+def _tokenize_title_keywords(message: str) -> List[str]:
+    normalized = _normalize_title_text(message).lower()
+    if not normalized:
+        return []
+    tokens = re.findall(r"[A-Za-z0-9\.]+", normalized)
+    keywords: List[str] = []
+    for token in tokens:
+        key = token.lower().strip(".")
+        if not key or key in SESSION_TITLE_STOPWORDS:
+            continue
+        if key in TITLE_KEYWORD_MAP:
+            mapped = TITLE_KEYWORD_MAP[key]
+        elif len(key) <= 2 and not key.isalpha():
+            continue
+        else:
+            mapped = key
+        if mapped not in keywords:
+            keywords.append(mapped)
+    return keywords
+
+
+def _looks_like_greeting_only(message: str) -> bool:
+    normalized = _normalize_title_text(message).lower()
+    if not normalized:
+        return True
+    if normalized in SESSION_TITLE_GREETINGS:
+        return True
+    tokens = _tokenize_title_keywords(normalized)
+    if not tokens:
+        return True
+    if len(tokens) == 1 and tokens[0] in {"thanks", "thank", "ok", "okay", "cool", "sure"}:
+        return True
+    return False
+
+
+def should_generate_session_title(
+    message: str,
+    current_title: Optional[str] = None,
+    message_count: int = 0,
+    *,
+    title_already_generated: bool = False,
+) -> bool:
+    """
+    Whether we should run auto title generation for this completion.
+
+    Policy: at most one auto title per session — only when the session still has
+    a placeholder title and we have not already marked titleGenerated.
+    No automatic renames on later messages (removed old message_count>=6 overlap logic).
+    """
+    if title_already_generated:
+        return False
+    if _looks_like_greeting_only(message):
+        return False
+
+    current = _normalize_title_text(current_title or "").lower()
+    if current in SESSION_TITLE_PLACEHOLDERS:
+        return True
+
+    return False
+
+
+def _fallback_session_title(message: str) -> str:
+    keywords = _tokenize_title_keywords(message)
+    if not keywords:
+        return "General Discussion"
+
+    first_words = keywords[:4]
+    title = _smart_title_case(first_words)
+    if not title:
+        return "General Discussion"
+
+    # Light intent shaping for natural titles.
+    lowered = message.lower()
+    if any(word in lowered for word in ["teach me", "learn", "study", "explain"]):
+        if len(first_words) < 4:
+            title = f"{title} Learning" if title else "Learning"
+    elif any(word in lowered for word in ["prep", "prepare", "preparation", "interview"]):
+        if "Interview" not in title:
+            if "Prep" in title:
+                title = f"{title} Interview"
+            elif len(first_words) < 4:
+                title = f"{title} Interview Prep" if title else "Interview Prep"
+    elif any(word in lowered for word in ["build", "design", "architect", "develop"]):
+        if "Development" not in title and len(first_words) < 4:
+            title = f"{title} Development"
+
+    title_words = title.split()[:5]
+    return " ".join(title_words) if title_words else "General Discussion"
+
+
+def _truncate_title(title: str, max_words: int = 5) -> str:
+    cleaned = _normalize_title_text(title)
+    if not cleaned:
+        return ""
+    words = cleaned.split()
+    if not words:
+        return ""
+    return _smart_title_case(words[:max_words])
+
+
+def _compose_title_context(
+    user_message: str,
+    assistant_response: str = "",
+    intent: Optional[str] = None,
+    entities: Optional[Any] = None,
+) -> str:
+    parts = [f"User: {user_message.strip()}"]
+    if assistant_response:
+        parts.append(f"Assistant: {assistant_response.strip()}")
+    if intent:
+        parts.append(f"Intent: {intent}")
+    if entities:
+        try:
+            entity_text = entities if isinstance(entities, str) else json.dumps(entities, default=str)
+        except Exception:
+            entity_text = str(entities)
+        parts.append(f"Entities: {entity_text}")
+    return "\n".join(part for part in parts if part)
+
+
+def _is_placeholder_title(title: Optional[str]) -> bool:
+    normalized = _normalize_title_text(title or "").lower()
+    return normalized in SESSION_TITLE_PLACEHOLDERS
+
+
+def build_session_metadata(message: str, title: Optional[str] = None) -> dict:
+    keywords = _tokenize_title_keywords(message)
+    title_keywords = _tokenize_title_keywords(title or "")
+    combined = []
+    for token in title_keywords + keywords:
+        if token and token not in combined:
+            combined.append(token)
+
+    primary_topic = None
+    if combined:
+        primary_topic = _smart_title_case([combined[0]])
+    elif title:
+        primary_topic = _truncate_title(title, 1)
+
+    tags = [token.lower() for token in combined[:5]]
+    if not tags and title:
+        tags = [word.lower() for word in _normalize_title_text(title).split()[:3]]
+
+    summary_source = _smart_title_case(combined[:4]) if combined else _truncate_title(title or message, 4)
+    if not summary_source:
+        summary_source = "General Discussion"
+
+    if len(summary_source.split()) <= 1 and title:
+        summary_source = _truncate_title(title, 4)
+
+    return {
+        "sessionSummary": f"Discussion about {summary_source}",
+        "primaryTopic": primary_topic or summary_source,
+        "tags": tags,
+    }
+
+
+async def generate_session_title(
+    user_message: str,
+    assistant_response: str = "",
+    session_id: Optional[str] = None,
+    current_title: Optional[str] = None,
+    message_count: int = 0,
+    intent: Optional[str] = None,
+    entities: Optional[Any] = None,
+    *,
+    title_already_generated: bool = False,
+) -> Optional[str]:
+    """
+    Generate a clean session title from the first meaningful user message.
+    Returns None if the message is too generic or the session should keep its title.
+    """
+    if not should_generate_session_title(
+        user_message,
+        current_title=current_title,
+        message_count=message_count,
+        title_already_generated=title_already_generated,
+    ):
+        return None
+
+    combined_context = _compose_title_context(user_message, assistant_response, intent=intent, entities=entities)
+    normalized_message = _normalize_title_text(combined_context)
+    cache_key = None
+    if session_id:
+        message_hash = hashlib.sha1(normalized_message.lower().encode("utf-8")).hexdigest()
+        cache_key = f"session:title:{session_id}:{message_hash}"
+        try:
+            cached_title = await redis_client.get(cache_key)
+            if cached_title:
+                cached_title = _truncate_title(cached_title, 5)
+                if cached_title and (_is_placeholder_title(current_title) or cached_title == current_title):
+                    return cached_title
+        except Exception as cache_error:
+            logger.debug(f"Session title cache read skipped: {cache_error}")
+
+    candidate = None
+    try:
+        system_prompt = (
+            "You write premium chat session titles.\n"
+            "Create a concise, human-sounding title from the first meaningful user turn and the assistant's first response.\n"
+            "Rules:\n"
+            "- 2 to 5 words only\n"
+            "- No emojis\n"
+            "- No quotes\n"
+            "- No punctuation spam\n"
+            "- No generic names like New Chat, Conversation, Session 1\n"
+            "- Use the main topic plus the user's intent\n"
+            "- Keep proper capitalization\n"
+            "- Preserve acronyms like AI, DBMS, API, React\n"
+            "Return only the title text."
+        )
+
+        completion = await _get_default_client().chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": combined_context},
+            ],
+            model="llama-3.1-8b-instant",
+            temperature=0.2,
+            max_tokens=16,
+        )
+
+        candidate = completion.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"Session title generation failed: {e}")
+
+    title = _truncate_title(candidate or "", 5)
+    if not title or _normalize_title_text(title).lower() in SESSION_TITLE_PLACEHOLDERS:
+        title = _fallback_session_title(user_message)
+
+    title = _truncate_title(title, 5)
+    if not title:
+        title = "General Discussion"
+
+    # Keep titles meaningful and concise.
+    if title.lower() in SESSION_TITLE_PLACEHOLDERS:
+        title = "General Discussion"
+
+    if current_title and not _is_placeholder_title(current_title):
+        if message_count >= 6:
+            current_keywords = set(_tokenize_title_keywords(current_title))
+            new_keywords = set(_tokenize_title_keywords(title))
+            overlap = len(current_keywords & new_keywords) / max(len(current_keywords | new_keywords), 1)
+            if overlap >= 0.35:
+                return None
+        else:
+            return None
+
+    if cache_key:
+        try:
+            await redis_client.setex(cache_key, SESSION_TITLE_CACHE_TTL_SECONDS, title)
+        except Exception as cache_error:
+            logger.debug(f"Session title cache write skipped: {cache_error}")
+
+    return title
+
 
 async def get_llm_response(
     prompt: str, 
@@ -73,7 +434,7 @@ async def get_llm_response(
 
         import asyncio
         chat_completion = await asyncio.wait_for(
-            client.chat.completions.create(
+            _get_default_client().chat.completions.create(
                 messages=messages,
                 model=model_name,
                 temperature=0.8,  # Creative and engaging
@@ -306,7 +667,7 @@ async def llm_health_check():
     """
     try:
         # Quick lightweight prompt to validate end-to-end
-        chat_completion = await client.chat.completions.create(
+        chat_completion = await _get_default_client().chat.completions.create(
             messages=[
                 {"role": "system", "content": "You are a health-check assistant."},
                 {"role": "user", "content": "reply with OK"},
@@ -350,7 +711,7 @@ Say: "Ooooh I'd love to help with that! Let me think of the perfect solution for
 
 Remember: Be their warm, energetic, caring companion! 🌟"""
 
-        chat_completion = await client.chat.completions.create(
+        chat_completion = await _get_default_client().chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": "What name should I give you?"},
@@ -368,37 +729,12 @@ Remember: Be their warm, energetic, caring companion! 🌟"""
 
 async def generate_chat_title(user_message: str, ai_response: str = "") -> str:
     """
-    Generates a concise, 3-5 word title for the chat session.
+    Backward-compatible chat title helper.
+
+    The new session naming system uses the first meaningful user message only,
+    so this wrapper now delegates to the shared session-title pipeline.
     """
-    try:
-        # Use a more specific prompt for punchy, magazine-style titles
-        system_prompt = (
-            "You are a creative editor. Create a SHORT, SWEET, and PERFECT title for this chat."
-            "\nRULES:"
-            "\n1. Length: 2-3 words MAX (Keep it tiny!)."
-            "\n2. Style: Engaging, warm, and relevant. Avoid generic words like 'Help' or 'Question'."
-            "\n3. Forbidden: 'Chat', 'Conversation', 'Guide', 'Introduction', 'Assistance'."
-            "\n4. Example: 'Python Magic', 'Dream Big', 'Debug Mode', 'Tasty Recipes', 'Space Travel'."
-            "\n5. If input is simple (e.g. 'hi'), output 'New Beginning'."
-            "\n6. Output ONLY the title text. No quotes. Make it sound like a cool project name."
-        )
-
-        user_content = f"Message: {user_message}"
-        if ai_response:
-             user_content += f"\nContext: {ai_response[:200]}"
-
-        completion = await client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            model="llama-3.1-8b-instant", # Use fast model for instant feel
-            temperature=0.7,
-            max_tokens=15,
-        )
-        
-        title = completion.choices[0].message.content.strip().strip('"')
+    title = await generate_session_title(user_message)
+    if title:
         return title
-    except Exception as e:
-        logger.warning(f"Title generation failed: {e}")
-        return " ".join(user_message.split()[:4]) if user_message else "New Idea"
+    return "General Discussion"

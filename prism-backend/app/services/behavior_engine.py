@@ -282,8 +282,6 @@ class BehaviorEngine:
         except Exception as e:
             logger.warning(f"Failed to clear interaction anchor: {e}")
 
-        return dynamic_prompt.strip()
-
     # Async wrapper for build_dynamic_prompt if we need async ops (which we do now for Mongo)
     # But wait, build_dynamic_prompt is called from main_brain which is async.
     # However, build_dynamic_prompt itself was sync. We need to make it async to call get_interaction_anchor (which is now async).
@@ -368,33 +366,33 @@ If the user asks "who are you", answer softly as {anchor.get('assistant_nickname
 🌟 MANDATORY RESPONSE FORMAT:
 
 1. **OPENING** (REQUIRED): Start with emoji + warm phrase
-   Examples: "✨ Great question!", "🎯 Let me help!", "💡 Interesting!"
+    Examples: "✨ Great question!", "🎯 Let me help!", "💡 Interesting!"
 
 2. **STRUCTURE** (REQUIRED):
-   • Use **bold** for key terms
-   • Use standard Markdown lists (start lines with - or *)
-   • Numbers (1. 2. 3.) for steps
-   • Short paragraphs (2-3 sentences)
-   • ⚠️ IMPORTANT: Put each list item on a NEW LINE. Do NOT inline them.
+    • Use **bold** for key terms
+    • Use standard Markdown lists (start lines with - or *)
+    • Numbers (1. 2. 3.) for steps
+    • Short paragraphs (2-3 sentences)
+    • ⚠️ IMPORTANT: Put each list item on a NEW LINE. Do NOT inline them.
 
 3. **EMOJIS** (REQUIRED - 3-5 per response):
-   📌 For tips/notes
-   🔑 For key points
-   ✅ For confirmations
-   💡 For ideas
-   🚀 For actions
-   ⚡ For important info
+    📌 For tips/notes
+    🔑 For key points
+    ✅ For confirmations
+    💡 For ideas
+    🚀 For actions
+    ⚡ For important info
 
 4. **CLOSING**: Brief warm summary (optional)
 
 5. **SUGGESTIONS** (CRITICAL):
-   Must end with logical next steps using the "➤" format defined above.
-   Example:
-   ---
-   **🎯 What would you like to explore next?**
-   ➤ [Suggestion 1]
-   ➤ [Suggestion 2]
-   ---
+    Must end with logical next steps using the "➤" format defined above.
+    Example:
+    ---
+    **🎯 What would you like to explore next?**
+    ➤ [Suggestion 1]
+    ➤ [Suggestion 2]
+    ---
 
 ❌ NEVER respond without emojis - use them to convey warmth & intelligence!
 """

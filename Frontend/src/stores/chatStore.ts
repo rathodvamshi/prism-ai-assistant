@@ -94,42 +94,7 @@ interface ChatState {
 
 // MongoDB is the source of truth
 
-// Filler words to remove from title generation
-const FILLER_WORDS = [
-  'play', 'show', 'tell me', 'can you', 'please', 'could you', 'would you',
-  'i want to', 'i need to', 'help me', 'how to', 'what is', 'what are',
-  'give me', 'find me', 'search for', 'look up', 'get me', 'open',
-  'hey', 'hi', 'hello', 'okay', 'ok', 'um', 'uh', 'like', 'just'
-];
-
-// Derive a readable chat title from the first user message
-const deriveTitleFrom = (text: string): string => {
-  if (!text) return "New Chat";
-  let t = text.replace(/\s+/g, " ").trim().toLowerCase();
-  if (!t) return "New Chat";
-
-  // Remove filler words from the beginning
-  for (const filler of FILLER_WORDS) {
-    if (t.startsWith(filler + ' ')) {
-      t = t.slice(filler.length + 1).trim();
-    }
-  }
-
-  // Capitalize first letter of each word
-  t = t.split(' ').map(word =>
-    word.charAt(0).toUpperCase() + word.slice(1)
-  ).join(' ');
-
-  if (!t) return "New Chat";
-
-  const max = 28; // Shorter max for cleaner sidebar
-  if (t.length <= max) return t;
-
-  // Try to break at word boundary
-  const lastSpace = t.lastIndexOf(" ", max);
-  const slicePoint = lastSpace > 15 ? lastSpace : max;
-  return t.slice(0, slicePoint).trim() + "…";
-};
+// Backend owns automatic session naming.
 
 export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
@@ -854,24 +819,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (chat.id === chatId) {
           // Only update this specific chat - prevent message mixing
           const updatedMessages = [...chat.messages, fullMessage];
-          const isFirstMessage = chat.messages.length === 0;
-          const shouldDeriveTitle = isFirstMessage && ["New Chat", "Untitled", ""].includes(chat.title);
-          // Persist a local snapshot for potential rename
-          if (shouldDeriveTitle) {
-            // Fire-and-forget persistence after state update
-            const newTitle = deriveTitleFrom(fullMessage.content);
-            // Schedule rename to avoid blocking UI update
-            queueMicrotask(() => {
-              try { get().renameChat(chatId, newTitle); } catch { /* noop */ }
-            });
-          }
           return {
             ...chat,
             messages: updatedMessages,
             messageCount: updatedMessages.length, // Update message count
             updatedAt: new Date(),
-            // Immediately mark a useful session name from the first user message
-            title: shouldDeriveTitle ? deriveTitleFrom(fullMessage.content) : chat.title,
           };
         }
         // Don't modify other chats
@@ -900,7 +852,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               ...chat,
               messages: updatedMessages,
               messageCount: updatedMessages.length,
-              // Keep title that we just derived from user prompt; backend/title events can override later
               title: chat.title,
             };
           }
@@ -1192,8 +1143,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               return chat;
             })
           }));
-          // Persist streamed title to MongoDB
-          try { get().renameChat(chatId, title); } catch { /* noop */ }
         },
         // ✅ onStart: CRITICAL FIX - Swap temp ID with real ID immediately
         (messageId: string) => {

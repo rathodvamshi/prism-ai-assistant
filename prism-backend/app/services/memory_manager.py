@@ -38,7 +38,24 @@ pc, index = create_pinecone_client()
 # ------------------------------------------------------
 # 2. Initialize Embedding Model (FastEmbed)
 # ------------------------------------------------------
-embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5") if TextEmbedding else None
+embedding_model = None
+
+
+def _get_embedding_model():
+    global embedding_model
+    if embedding_model is not None:
+        return embedding_model
+
+    if not TextEmbedding:
+        return None
+
+    try:
+        embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    except Exception as e:
+        logger.warning(f"FastEmbed unavailable, using fallback embeddings: {e}")
+        embedding_model = None
+
+    return embedding_model
 
 
 # ------------------------------------------------------
@@ -49,10 +66,11 @@ async def get_embedding(text: str):
     Converts text into a dense embedding vector using FastEmbed.
     Ensures the returned vector is a Python list (not numpy array).
     """
-    if not embedding_model:
+    model = _get_embedding_model()
+    if not model:
         # Return a dummy embedding if TextEmbedding is not available
         return [0.0] * 384  # Standard embedding size
-    vectors = list(embedding_model.embed([text]))
+    vectors = list(model.embed([text]))
     return vectors[0].tolist()   # Convert NumPy → Python list
 
 
@@ -65,6 +83,29 @@ def _deterministic_memory_id(user_id: str, text: str, memory_type: str) -> str:
     """
     norm = f"{user_id}|{memory_type}|{text.strip().lower()}".encode("utf-8")
     return hashlib.sha1(norm).hexdigest()  # Pinecone id as hex string
+
+
+def _expand_semantic_query(query: str) -> str:
+    """Expand vague preference queries into richer semantic search terms."""
+    normalized = (query or "").lower().strip()
+    preference_markers = [
+        "which coding lang", "which programming lang", "what coding lang",
+        "what programming lang", "what language do i code in",
+        "which language do i code in", "favorite coding language",
+        "preferred coding language", "primary coding language",
+        "language i love to code in", "coding language", "programming language"
+    ]
+
+    if any(marker in normalized for marker in preference_markers):
+        return " | ".join([
+            query,
+            "user preferred programming language",
+            "user favorite coding language",
+            "user loves coding in java",
+            "coding language preference",
+        ])
+
+    return query
 
 
 async def save_long_term_memory(user_id: str, text: str, memory_type: str = "fact"):
@@ -171,7 +212,8 @@ async def retrieve_long_term_memory(user_id: str, query: str, top_k: int = 5):
         return []
     
     try:
-        vector = await get_embedding(query)
+        expanded_query = _expand_semantic_query(query)
+        vector = await get_embedding(expanded_query)
 
         # Get top 5 matches (we'll filter by score)
         results = index.query(
@@ -194,7 +236,7 @@ async def retrieve_long_term_memory(user_id: str, query: str, top_k: int = 5):
                     logger.debug(f"[Memory Hardening] Rejected memory with score {score:.3f} (below 0.75 threshold)")
         
         if not valid_memories:
-            logger.info(f"[Memory Hardening] No memories found with score > 0.75 for query: {query[:50]}...")
+            logger.info(f"[Memory Hardening] No memories found with score > 0.75 for query: {expanded_query[:50]}...")
             return ["(No relevant past memories found)"]
         
         logger.info(f"[Memory Hardening] Returning {len(valid_memories)} high-quality memories (score > 0.75)")

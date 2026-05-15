@@ -337,39 +337,42 @@ export const chatAPI = {
                     const combined = actionBuffer + text;
                     actionBuffer = '';
 
-                    // Extract complete ACTION tags (all types: MEDIA_PLAY, REFRESH_TASKS, suggestions, etc.)
-                    const actionRegex = /<!--ACTION:([^>]+)-->/g;
+                    // Extract complete ACTION tags (must match MessageBlockParser + main_brain formats)
+                    const actionRegex = /<!--ACTION:([\s\S]*?)-->/g;
                     let match;
                     while ((match = actionRegex.exec(combined)) !== null) {
                         try {
                             const actionContent = match[1];
-                            
-                            // Try to parse as JSON (for structured actions like MEDIA_PLAY)
-                            if (actionContent.startsWith('{')) {
-                                const payload = JSON.parse(actionContent);
-                                console.log('🎬 Extracted action:', payload);
-                                capturedAction = payload; // Store for persistence
-                                console.log('💾 Captured action for persistence:', capturedAction);
-                                if (onAction) {
-                                    onAction(payload);
-                                }
-                            } else {
-                                // Handle simple action types (REFRESH_TASKS, etc.)
-                                console.log('🎬 Extracted simple action:', actionContent);
-                                const simpleAction = { type: actionContent.trim(), payload: {} };
-                                capturedAction = simpleAction; // Store for persistence
-                                console.log('💾 Captured simple action for persistence:', capturedAction);
-                                if (onAction) {
-                                    onAction(simpleAction);
-                                }
+                            const trimmed = actionContent.trim();
+
+                            // <!--ACTION:MEDIA_PLAY:{"mode":"video",...}--> (streaming media path)
+                            if (/^MEDIA_PLAY:/i.test(trimmed)) {
+                                const jsonStr = trimmed.replace(/^MEDIA_PLAY:/i, '');
+                                const rawPayload = JSON.parse(jsonStr);
+                                const structured = { type: 'media_play' as const, payload: rawPayload };
+                                capturedAction = structured;
+                                if (onAction) onAction(structured);
+                                continue;
                             }
+
+                            // <!--ACTION:{"type":"media_play","payload":{...}}--> (envelope JSON)
+                            if (trimmed.startsWith('{')) {
+                                const payload = JSON.parse(trimmed);
+                                capturedAction = payload;
+                                if (onAction) onAction(payload);
+                                continue;
+                            }
+
+                            const simpleAction = { type: trimmed, payload: {} };
+                            capturedAction = simpleAction;
+                            if (onAction) onAction(simpleAction);
                         } catch (e) {
                             console.error('❌ Failed to parse action:', e);
                         }
                     }
 
-                    // Check for partial ACTION tag at end
-                    const partialMatch = combined.match(/<!--ACTION:[^>]*$/);
+                    // Check for partial ACTION tag at end (tag may split across SSE chunks)
+                    const partialMatch = combined.match(/<!--ACTION:[\s\S]*$/);
                     if (partialMatch) {
                         actionBuffer = partialMatch[0];
                         return combined.slice(0, -partialMatch[0].length);

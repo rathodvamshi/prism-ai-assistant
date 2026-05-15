@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from app.services.generation_manager import GenerationManager, GenerationState
 from app.services.input_validator import InputValidator, default_validator
-from app.db.mongo_client import get_database
+from app.db.mongo_client import get_database, sessions_collection
 from app.utils.auth import get_current_user_from_session
 from app.db.redis_client import get_redis_client
 from app.services.main_brain import generate_response_stream
@@ -127,19 +127,19 @@ async def finalize_generation(
     existing_msg, state = await asyncio.gather(existing_msg_task, state_task)
     
     if existing_msg:
-        logger.info(f"✅ Generation {generation_id} already persisted. Returning 200 OK (Idempotent).")
-        asyncio.create_task(gen_manager.cleanup(generation_id))  # Fire-and-forget
+        logger.debug(f"✅ Gen {generation_id[:8]}... already persisted (idempotent)")
+        # 🚀 NO cleanup here - already done or not needed
         return {
             "status": "ok",
             "message": "Already finalized",
             "generation_id": generation_id
         }
     
-    # 3. Handle Missing Generation (Graceful 200)
+    # 3. Handle Missing Generation (Graceful 200 - Prevents Double-Release)
     # If state is missing, it was likely already cleaned up or never existed.
-    # Don't error, just assume success.
+    # Don't error, just assume success. This prevents duplicate finalization.
     if not state:
-        logger.info(f"⚠️ Finalize called for missing generation {generation_id}. Assuming already cleaned/done. Returning 200 OK.")
+        logger.debug(f"⚠️ Gen {generation_id[:8]}... not found (already cleaned)")
         return {
             "status": "ok",
             "message": "Generation not found (likely already cleaned)",
@@ -284,45 +284,65 @@ async def finalize_generation(
         # 🚀 Fire-and-forget: Don't wait for usage tracking
         asyncio.create_task(commit_usage_once())
 
-        # 8. 🚀 OPTIMIZED: Parallel status update + cleanup trigger
-        asyncio.create_task(gen_manager.update_status(generation_id, "finalized"))
-        asyncio.create_task(gen_manager.cleanup(generation_id))
-        
-        # 9. ✨ PRO AUTO-RENAME: Generating perfect titles automatically
-        # Runs in background to keep UI snappy
-        async def auto_rename_pro():
+        # 8. 🚀 OPTIMIZED: Aggressive cleanup to prevent double-release
+        # Mark for cleanup IMMEDIATELY - only first caller wins atomic lock
+        async def aggressive_cleanup():
+            """Aggressive cleanup prevents state machine double-release"""
             try:
-                # Check current title
-                current_session = await sessions_collection.find_one(
-                    {"chat_id": chat_id}, 
-                    {"title": 1, "messages": 1}
-                )
-                
-                if not current_session: return
-                
-                current_title = current_session.get("title", "New Chat")
-                # Default variations to catch (including simple greetings)
-                is_default = current_title in ["New Chat", "Chat", "Untitled", "New Conversation", "New Beginning", "New Idea"]
-                
-                # Only rename if default and early in conversation (<= 4 messages)
-                msg_count = len(current_session.get("messages", []))
-                
-                if is_default and msg_count <= 6:  # Allow up to 3 turns before giving up on renaming
-                    from app.utils.llm_client import generate_chat_title
-                    
-                    # Generate punchy title using the prompt + response context
-                    new_title = await generate_chat_title(state.prompt, final_content)
-                    
-                    if new_title and len(new_title) > 2:
-                        await sessions_collection.update_one(
-                            {"chat_id": chat_id},
-                            {"$set": {"title": new_title}}
-                        )
-                        logger.info(f"✨ Auto-Renamed Session {chat_id} -> '{new_title}'")
+                # Set finalized status first
+                await gen_manager.update_status(generation_id, "finalized")
+                # Then cleanup (atomic - only first caller succeeds)
+                await gen_manager.cleanup(generation_id)
+                logger.debug(f"✅ Aggressive cleanup: {generation_id[:8]}...")
             except Exception as e:
-                logger.warning(f"⚠️ Auto-rename failed: {e}")
+                logger.debug(f"⚠️ Cleanup error (benign): {e}")
+        
+        # Schedule cleanup but don't wait
+        asyncio.create_task(aggressive_cleanup())
+        
+        # 9. ✨ SESSION TITLE PERSISTENCE
+        # Consume the cached title produced by streaming and persist it once.
+        async def persist_cached_session_title():
+            try:
+                redis_client = await get_redis_client()
+                cache_key = f"session:title:result:{chat_id}:{generation_id}"
+                cached_payload = await redis_client.get(cache_key)
+                if not cached_payload:
+                    return
 
-        asyncio.create_task(auto_rename_pro())
+                if isinstance(cached_payload, bytes):
+                    cached_payload = cached_payload.decode("utf-8")
+
+                title_payload = json.loads(cached_payload)
+                await redis_client.delete(cache_key)
+
+                if not title_payload.get("title"):
+                    return
+
+                now = datetime.utcnow()
+                await sessions_collection.update_one(
+                    {"chat_id": chat_id},
+                    {
+                        "$set": {
+                            "title": title_payload.get("title"),
+                            "sessionTitle": title_payload.get("title"),
+                            "sessionSummary": title_payload.get("sessionSummary", ""),
+                            "primaryTopic": title_payload.get("primaryTopic", ""),
+                            "tags": title_payload.get("tags", []),
+                            "titleGenerated": True,
+                            "titleConfidence": title_payload.get("titleConfidence", 0.0),
+                            "titleGeneratedAt": now,
+                            "updated_at": now,
+                            "updatedAt": now,
+                            "lastMessageAt": now,
+                        }
+                    }
+                )
+                logger.info(f"✨ Persisted Session Title {chat_id} -> '{title_payload.get('title')}'")
+            except Exception as e:
+                logger.warning(f"⚠️ Session title persistence failed: {e}")
+
+        asyncio.create_task(persist_cached_session_title())
         
         logger.info(f"✅ State Machine: {generation_id} -> finalized -> cleanup")
         
@@ -1068,6 +1088,7 @@ async def stream_response(
             # Flush any remaining SSE buffer (WITH FILTERING!)
             # Also flush any partial tag that was buffered
             final_content = sse_buffer + partial_tag_buffer
+            final_clean = ""
             if final_content:
                 # 🛡️ CRITICAL: Final filter pass to catch any trailing metadata
                 final_clean = METADATA_PATTERN.sub('', final_content)
@@ -1076,7 +1097,104 @@ async def stream_response(
                         "event": "chunk",
                         "data": json.dumps({"content": final_clean})
                     }
-            
+
+            # Generate a single backend-owned title after the assistant response is complete.
+            # Cache the payload so finalize() can persist it without re-running the model.
+            try:
+                from app.utils.llm_client import build_session_metadata, generate_session_title, should_generate_session_title
+
+                from bson import ObjectId
+                user_object_id = None
+                try:
+                    user_object_id = ObjectId(user_id)
+                except Exception:
+                    user_object_id = None
+
+                current_session = await sessions_collection.find_one(
+                    {
+                        "$and": [
+                            {"$or": [{"chat_id": chat_id}, {"sessionId": chat_id}]},
+                            {"$or": ([{"user_id": user_object_id}] if user_object_id else []) + [{"userId": user_id}]},
+                        ]
+                    },
+                    {"title": 1, "sessionTitle": 1, "messages": 1, "titleGenerated": 1},
+                )
+
+                if current_session:
+                    current_title = current_session.get("title") or current_session.get("sessionTitle") or "New Chat"
+                    msg_count = len(current_session.get("messages", []))
+                    title_already_generated = current_session.get("titleGenerated") is True
+                    response_text = final_clean or final_content or ""
+                    if should_generate_session_title(
+                        state.prompt,
+                        current_title=current_title,
+                        message_count=msg_count,
+                        title_already_generated=title_already_generated,
+                    ):
+                        new_title = await generate_session_title(
+                            state.prompt,
+                            assistant_response=response_text,
+                            session_id=chat_id,
+                            current_title=current_title,
+                            message_count=msg_count,
+                            title_already_generated=title_already_generated,
+                        )
+                        if new_title:
+                            metadata = build_session_metadata(f"User: {state.prompt}\nAssistant: {response_text}", new_title)
+                            title_payload = {
+                                "title": new_title,
+                                "sessionTitle": new_title,
+                                "sessionSummary": metadata["sessionSummary"],
+                                "primaryTopic": metadata["primaryTopic"],
+                                "tags": metadata["tags"],
+                                "titleGenerated": True,
+                                "titleConfidence": 0.94 if response_text else 0.9,
+                            }
+                            try:
+                                redis_client = await get_redis_client()
+                                cache_key = f"session:title:result:{chat_id}:{generation_id}"
+                                await redis_client.setex(cache_key, 600, json.dumps(title_payload))
+                            except Exception as cache_error:
+                                logger.debug(f"Title cache write skipped: {cache_error}")
+                            yield {
+                                "event": "title",
+                                "data": json.dumps({"title": new_title})
+                            }
+                            # Persist immediately so a fast second message never runs title LLM again
+                            try:
+                                now_utc = datetime.utcnow()
+                                session_filter = {
+                                    "$and": [
+                                        {"$or": [{"chat_id": chat_id}, {"sessionId": chat_id}]},
+                                        {"$or": ([{"user_id": user_object_id}] if user_object_id else []) + [{"userId": user_id}]},
+                                        {"titleGenerated": {"$ne": True}},
+                                    ]
+                                }
+                                await sessions_collection.update_one(
+                                    session_filter,
+                                    {
+                                        "$set": {
+                                            "title": new_title,
+                                            "sessionTitle": new_title,
+                                            "sessionSummary": metadata["sessionSummary"],
+                                            "primaryTopic": metadata["primaryTopic"],
+                                            "tags": metadata["tags"],
+                                            "titleGenerated": True,
+                                            "titleConfidence": title_payload["titleConfidence"],
+                                            "titleGeneratedAt": now_utc,
+                                            "updated_at": now_utc,
+                                            "updatedAt": now_utc,
+                                            "lastMessageAt": now_utc,
+                                        }
+                                    },
+                                )
+                            except Exception as persist_title_error:
+                                logger.warning(
+                                    f"⚠️ Immediate session title persist failed: {persist_title_error}"
+                                )
+            except Exception as e:
+                logger.warning(f"⚠️ Title generation stream step failed: {e}")
+
             # Completed successfully
             if not await gen_manager.is_cancelled(generation_id):
                 await gen_manager.update_status(generation_id, "completed")

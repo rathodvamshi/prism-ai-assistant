@@ -731,31 +731,21 @@ export const MessageBubble = memo(({
               />
             )}
 
-            {/* Rich action payloads (e.g., video) - Only show if not already rendered as a block */}
+            {/* Rich action payloads (e.g., video) — show as soon as action is set (even while thinking/streaming) */}
             {(() => {
-              const shouldRender = !isThinking && (action?.type === "video" || action?.type === "media_play") && !messageBlocks?.some(b => b.type === "action");
-              if (action && (action?.type === "video" || action?.type === "media_play")) {
-                console.log('🎬 MediaActionCard render check:', {
-                  messageId: message.id,
-                  isThinking,
-                  actionType: action?.type,
-                  hasMessageBlocks: !!messageBlocks,
-                  messageBlocksLength: messageBlocks?.length,
-                  hasActionBlock: messageBlocks?.some(b => b.type === "action"),
-                  shouldRender,
-                  payload: action.type === "media_play" ? (action as any).payload : action.data
-                });
-              }
+              const isMedia = action?.type === "video" || action?.type === "media_play";
+              const shouldRender =
+                isMedia && !messageBlocks?.some(b => b.type === "action");
               return shouldRender && (
                 <div className="mt-2 sm:mt-3 w-full">
                   <MediaActionCard
                     payload={
-                      action.type === "media_play"
+                      action?.type === "media_play"
                         ? (action as any).payload
                         : {
                           mode: 'video',
-                          url: action.data?.url,
-                          query: action.data?.title || "Video",
+                          url: (action as any)?.data?.url,
+                          query: (action as any)?.data?.title || "Video",
                           source: "youtube"
                         }
                     }

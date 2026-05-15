@@ -298,7 +298,13 @@ async def cleanup_all_ghost_data():
         await db.miniagent_threads.delete_many({})
         
         # Clear Redis
-        await redis_client.flushdb()
+        redis_raw_client = getattr(redis_client, "_client", None)
+        if redis_raw_client is not None:
+            await redis_raw_client.flushdb()
+        else:
+            redis_keys = await redis_client.keys("*")
+            for key in redis_keys:
+                await redis_client.delete(key)
         
         # Clear Pinecone (delete all vectors) - try multiple methods
         try:
